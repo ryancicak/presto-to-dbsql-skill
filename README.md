@@ -41,6 +41,18 @@ flagging behavior is why the "silently wrong" column goes to zero, and it's the 
 
 The benchmark ships with 27 cases, every expected value verified against a live Trino 479 cluster. The table above was measured on the original 20-case set, which included one case (window frame EXCLUDE) that real-Trino testing later proved was never valid Trino SQL in the first place; it has been removed. That correction is a good example of why the verification loop exists.
 
+## Does it hold up beyond hand-picked cases?
+
+The hard cases test depth: does the converted SQL return the RIGHT answer. For breadth, I ran all
+99 TPC-DS queries through the deterministic script. Every one of them converts without the script
+raising, and every converted query is accepted by the Databricks SQL parser. That's roughly 470KB
+of dense analytics SQL: rollups, grouping sets, windowed rankings, correlated subqueries,
+15-way joins. To be precise about what that proves: each query was validated against the real
+parser and stopped only at the nonexistent TPC-DS tables, so this is a syntax-at-scale result,
+not a semantics one. Semantics is what the 27 cases, the cross-engine example, and the reconcile
+step in the method below are for. Depth and breadth are different claims and this repo tries to
+be explicit about which one it is making at any moment.
+
 ## What's in here
 
 - `skills/presto-to-dbsql/SKILL.md` is the skill itself: six deterministic rules, a function
@@ -87,8 +99,7 @@ seeds a few rows, and documents the exact two rows the converted job should prod
 those two rows back, you've just run the whole verification loop. I also ran this example
 cross-engine: the Presto source on a real Trino 479 cluster and the converted output on
 Databricks SQL, against the same Unity Catalog Iceberg tables, return identical rows. The
-conversion script itself is deterministic (byte-identical output across runs), and as a scale
-check, all 99 TPC-DS queries pass through it and come out accepted by the Databricks SQL parser.
+conversion script itself is deterministic: byte-identical output across runs.
 
 ## How I'd actually use this on a migration
 
