@@ -32,7 +32,7 @@ CREATE OR REPLACE TABLE media_prod_facts.engagement_daily_fact (
   storefront STRUCT<brand_name: STRING>,
   page STRUCT<category_name: STRING>,
   item_list ARRAY<STRUCT<item_id: STRING, slot_number: INT,
-    candidate_info: STRUCT<promoted_bool: BOOLEAN, nightly_rate: DOUBLE, badge_id: STRING>>>,
+    candidate_info: STRUCT<promoted_bool: BOOLEAN, unit_price: DOUBLE, badge_id: STRING>>>,
   candidate_items ARRAY<STRUCT<event_epoch: BIGINT, category_name: STRING,
     item_ref: STRUCT<item_id: STRING>>>
 );
@@ -62,9 +62,9 @@ SELECT
   named_struct('category_name', 'Movies'),
   array(
     named_struct('item_id', 'A1', 'slot_number', 1,
-      'candidate_info', named_struct('promoted_bool', TRUE, 'nightly_rate', 9.99, 'badge_id', '5')),
+      'candidate_info', named_struct('promoted_bool', TRUE, 'unit_price', 9.99, 'badge_id', '5')),
     named_struct('item_id', 'B2', 'slot_number', 2,
-      'candidate_info', named_struct('promoted_bool', FALSE, 'nightly_rate', 4.99, 'badge_id', '6'))),
+      'candidate_info', named_struct('promoted_bool', FALSE, 'unit_price', 4.99, 'badge_id', '6'))),
   array(
     named_struct('event_epoch', 1714558600000, 'category_name', 'Movies',
       'item_ref', named_struct('item_id', 'A1')),

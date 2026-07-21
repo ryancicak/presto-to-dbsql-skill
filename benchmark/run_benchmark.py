@@ -3,7 +3,14 @@ Each case: self-contained Trino SQL (inline VALUES, no tables) + documented Trin
 Lanes: sqlglot(RAISE), LLM-naive (one batched FMAPI call), raw-paste (hazard meter).
 Grade per lane: CORRECT / WRONG_SILENT / LOUD_FAIL / (LLM) per-case.
 """
-import json, re, subprocess, sys, time
+import json, os, re, subprocess, sys, time
+
+# Config from environment (documented in README). PROFILE/HOST drive auth; WAREHOUSE/CATALOG
+# pick where converted SQL runs. HOST is only needed for the LLM lane.
+PROFILE = os.environ.get("DATABRICKS_PROFILE", "DEFAULT")
+HOST = os.environ.get("DATABRICKS_HOST", "")
+WAREHOUSE = os.environ.get("DBSQL_WAREHOUSE_ID", "")
+CATALOG = os.environ.get("DBSQL_CATALOG", "")
 
 CASES = [
     ("int_div", "SELECT 7 / 2", "3", "integer division truncates in Trino"),

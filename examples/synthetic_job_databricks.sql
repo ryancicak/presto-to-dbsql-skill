@@ -82,7 +82,7 @@ WITH vw_page_views AS (
   WHERE
     buy_event_date >= CAST('2024-05-01' AS DATE)
     AND buy_event_date <= CAST('2024-05-01' AS DATE)
-    AND event_date <= DATEADD(DAY, 8, CAST('2024-05-01' AS DATE))
+    AND event_date <= DATE_ADD(CAST('2024-05-01' AS DATE), 8)
   GROUP BY
     1,
     2,
@@ -105,13 +105,13 @@ WITH vw_page_views AS (
         CAST(p.item_id AS STRING),
         p.slot_number,
         COALESCE(p.candidate_info.promoted_bool, FALSE),
-        p.candidate_info.nightly_rate,
+        p.candidate_info.unit_price,
         p.candidate_info.badge_id
       ) AS STRUCT<
         item_id: STRING,
         slot_number: INT,
         promoted_bool: BOOLEAN,
-        nightly_rate: DOUBLE,
+        unit_price: DOUBLE,
         badge_id: BIGINT
       >)
     ) AS item_list,

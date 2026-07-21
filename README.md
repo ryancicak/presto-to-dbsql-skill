@@ -55,16 +55,21 @@ be explicit about which one it is making at any moment.
 
 ## What's in here
 
-- `skills/presto-to-dbsql/SKILL.md` is the skill itself: six deterministic rules, a function
+- `skills/presto-to-dbsql/SKILL.md` is the skill itself: the deterministic rules, a function
   map, the semantic traps, and a verification workflow.
 - `PRESTO_VS_DBSQL.md` is the full difference catalog with the provenance tags.
 - `sqlglot_rules.py` is the deterministic path for bulk conversion: sqlglot reading trino and
   writing databricks, plus custom AST rules for the constructs stock sqlglot drops silently
-  (`TRY()`, `CROSS JOIN UNNEST`, struct field names inside array set operations). It runs with
+  (`TRY()`, `CROSS JOIN UNNEST`, struct field names inside array set operations) or converts to
+  something that only looks right: `year_of_week`/`yow` (stock emits a `YEAR_OF_WEEK()` call that
+  is not a Databricks function), `date_add` on a DATE (stock widens DATE to TIMESTAMP), and a
+  lateral column alias referenced inside a window (transpiles clean, then fails at runtime with
+  `LATERAL_COLUMN_ALIAS_IN_WINDOW` - the rule inlines the expression). It runs with
   `unsupported_level=RAISE` so anything unmapped fails loudly instead of disappearing.
 - `benchmark/` has the 27 hard cases and a grader that runs converted SQL against your own
   warehouse. Configure it with `DATABRICKS_PROFILE`, `DATABRICKS_HOST`, `DBSQL_WAREHOUSE_ID`,
-  and `DBSQL_CATALOG`.
+  and `DBSQL_CATALOG`. `benchmark/regression_new_rules.py` is a fast offline check (no warehouse)
+  that runs the deterministic converter end to end and asserts its output on small fixtures.
 - `examples/` has a fully synthetic job you can use to see the whole thing work end to end.
 
 ## Installing the skill

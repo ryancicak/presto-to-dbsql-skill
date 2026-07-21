@@ -1,3 +1,10 @@
 .DS_Store
 __pycache__/
 *.pyc
+
+# Local-only field-validation trail (references a specific engagement + live cross-engine
+# harness that public users can't reproduce). Kept out of the public repo intentionally.
+benchmark/pawan_*
+benchmark/reconcile_*
+benchmark/PAWAN_FEEDBACK_RESULTS.md
+examples/pawan_funnel_*

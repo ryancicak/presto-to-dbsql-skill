@@ -10,6 +10,21 @@ Rule 2b: Trino exposes unnested row-fields as bare columns; Spark's EXPLODE-as-s
         Qualify bare references to element fields with the unnest alias in affected scopes.
         Field list comes from the job's own ROW type decls here; a production pipeline should
         introspect the array column's element schema from the catalog.
+Rule 3: struct field-name alignment inside ARRAY_INTERSECT / ARRAY_EXCEPT / ARRAY_UNION.
+Rule 6: date_add(unit, n, d) on a DATE -> DATE-preserving Databricks form. sqlglot emits
+        dateadd(MONTH, n, d) which silently widens DATE -> TIMESTAMP. Route month/quarter/year
+        to add_months (DATE, month-end clamp matches Trino) and day/week to 2-arg date_add.
+Rule 6b: date_trunc on a DATE input -> trunc() to keep DATE (DBSQL date_trunc always returns
+        TIMESTAMP). sqlglot already does this for provably-DATE args (DATE literals, CAST AS DATE);
+        for bare columns, name the DATE ones via DATE_COLS env (like ELEM_FIELDS).
+Rule 7: year_of_week(x) / yow(x) -> extract(YEAROFWEEK FROM x). sqlglot otherwise emits a
+        literal YEAR_OF_WEEK() call, which is NOT a Databricks function (silent-wrong at runtime).
+Rule 8: lateral column alias in a window -> inline the aliased expression into OVER(). DBSQL
+        raises UNSUPPORTED_FEATURE.LATERAL_COLUMN_ALIAS_IN_WINDOW when a SELECT-list alias is
+        referenced inside a window spec; a faithful Presto source repeats the full expression
+        there anyway. Non-deterministic aliases are flagged, not duplicated.
+(Rules 4-5 - integer division and repeat()->array_repeat - are handled by stock sqlglot; see
+ SKILL.md for the full numbered rule list. This script implements the AST passes 1-3 and 6-8.)
 """
 import sys
 import sqlglot
@@ -113,6 +128,103 @@ for node in set_op_nodes:
         st.set("expressions", new_exprs)
         structs_renamed += 1
 print(f"Rule 3: struct constructors positionally renamed in array set-ops: {structs_renamed}")
+
+# ---- Rule 6: date_add(unit, n, d) on DATE -> DATE-preserving form ----
+# Trino date_add returns the input type (DATE in -> DATE out). sqlglot renders the databricks
+# 3-arg DATEADD(unit, n, d), whose declared input is TIMESTAMP, so a DATE silently widens to
+# TIMESTAMP. Route month/quarter/year to add_months (returns DATE, non-sticky month-end clamp
+# matches Trino's Joda semantics), and day/week to the 2-arg date_add (returns DATE).
+DATEADD_MONTH_MULT = {"MONTH": 1, "QUARTER": 3, "YEAR": 12}
+dateadd_fixed = 0
+for da in list(tree.find_all(exp.DateAdd)):
+    unit = (da.args.get("unit").name if da.args.get("unit") else "DAY").upper()
+    x = da.this.copy()
+    n = da.expression.copy()
+    if unit in DATEADD_MONTH_MULT:
+        k = DATEADD_MONTH_MULT[unit]
+        months = n if k == 1 else exp.Mul(this=exp.Literal.number(k), expression=n)
+        da.replace(exp.Anonymous(this="add_months", expressions=[x, months]))
+        dateadd_fixed += 1
+    elif unit in ("DAY", "WEEK"):
+        days = n if unit == "DAY" else exp.Mul(this=exp.Literal.number(7), expression=n)
+        da.replace(exp.Anonymous(this="date_add", expressions=[x, days]))
+        dateadd_fixed += 1
+    # sub-day units (hour/minute/...) only occur on TIMESTAMP inputs; leave those to sqlglot
+print(f"Rule 6: date_add unit forms rewritten (DATE-preserving): {dateadd_fixed}")
+
+# ---- Rule 6b: date_trunc on a DATE input -> trunc() to preserve the DATE type ----
+# Trino date_trunc is type-preserving (DATE in -> DATE out); DBSQL date_trunc ALWAYS returns
+# TIMESTAMP, so a DATE column silently widens. sqlglot ALREADY emits trunc() when the argument is
+# provably DATE (a DATE literal or CAST(.. AS DATE)). The remaining gap is a BARE COLUMN whose
+# type sqlglot can't see: name those via DATE_COLS (comma-separated), like ELEM_FIELDS, sourced
+# from information_schema in a real pipeline. Only month/quarter/year/week have a DATE-returning
+# trunc(); finer units stay date_trunc (they imply a TIMESTAMP input anyway).
+DATE_COLS = set(filter(None, os.environ.get("DATE_COLS", "").split(",")))
+TRUNC_UNITS = {"YEAR", "QUARTER", "MONTH", "WEEK"}
+dtrunc_fixed = 0
+if DATE_COLS:
+    for tt in list(tree.find_all(exp.TimestampTrunc)):
+        arg = tt.this
+        unit = (tt.args.get("unit").name if tt.args.get("unit") else "").upper()
+        if isinstance(arg, exp.Column) and arg.name in DATE_COLS and unit in TRUNC_UNITS:
+            tt.replace(exp.Anonymous(this="trunc", expressions=[arg.copy(), exp.Literal.string(unit)]))
+            dtrunc_fixed += 1
+print(f"Rule 6b: date_trunc on named DATE columns -> trunc (DATE-preserving): {dtrunc_fixed}")
+
+# ---- Rule 7: year_of_week / yow -> extract(YEAROFWEEK FROM x) ----
+# sqlglot maps year_of_week to a YearOfWeek node that renders as YEAR_OF_WEEK(x) in the
+# databricks dialect - but Spark/DBSQL has no such function. The equivalent is the
+# YEAROFWEEK extract field (same ISO-8601 week-numbering-year semantics, verified in docs).
+yow_fixed = 0
+for n in list(tree.find_all(exp.YearOfWeek)):
+    n.replace(exp.Extract(this=exp.var("YEAROFWEEK"), expression=n.this.copy()))
+    yow_fixed += 1
+for n in list(tree.find_all(exp.Anonymous)):
+    if str(n.this).lower() == "yow" and n.expressions:
+        n.replace(exp.Extract(this=exp.var("YEAROFWEEK"), expression=n.expressions[0].copy()))
+        yow_fixed += 1
+print(f"Rule 7: year_of_week/yow -> extract(YEAROFWEEK FROM ..): {yow_fixed}")
+
+# ---- Rule 8: lateral column alias inside a window -> inline the expression ----
+# DBSQL raises UNSUPPORTED_FEATURE.LATERAL_COLUMN_ALIAS_IN_WINDOW when a SELECT-list alias is
+# referenced inside OVER(...). Only inline when the bare column name matches a peer alias AND
+# appears inside a window; leave real-table columns and non-window alias reuse alone. Inlining
+# duplicates the expression, so flag (do not duplicate) non-deterministic sources.
+NONDETERMINISTIC = {"rand", "random", "randn", "uuid", "current_timestamp", "now",
+                    "current_date", "shuffle"}
+
+def _is_nondeterministic(node):
+    for fn in node.find_all(exp.Func, exp.Anonymous):
+        name = str(getattr(fn, "this", "")).lower() if isinstance(fn, exp.Anonymous) else fn.key
+        if name in NONDETERMINISTIC:
+            return True
+    for cls_name in ("CurrentTimestamp", "CurrentDate", "Rand"):
+        cls = getattr(exp, cls_name, None)
+        if cls is not None and node.find(cls):
+            return True
+    return False
+
+lca_inlined, lca_flagged = 0, 0
+for select in tree.find_all(exp.Select):
+    alias_map = {p.alias: p.this for p in select.expressions if isinstance(p, exp.Alias)}
+    if not alias_map:
+        continue
+    for win in select.find_all(exp.Window):
+        for col in list(win.find_all(exp.Column)):
+            if col.table:
+                continue
+            target = alias_map.get(col.name)
+            if target is None:
+                continue
+            if _is_nondeterministic(target):
+                lca_flagged += 1
+                continue
+            col.replace(target.copy())
+            lca_inlined += 1
+print(f"Rule 8: lateral column aliases inlined into windows: {lca_inlined} (nondeterministic flagged: {lca_flagged})")
+if lca_flagged:
+    print("  WARNING: a non-deterministic SELECT-list alias is referenced inside a window; "
+          "DBSQL will reject it and inlining would duplicate the expression - FLAG FOR HUMAN REVIEW.")
 
 # ---- Generate with unsupported constructs raising loudly ----
 out = tree.sql(dialect="databricks", pretty=True, unsupported_level=sqlglot.ErrorLevel.RAISE)

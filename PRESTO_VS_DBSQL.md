@@ -2,7 +2,7 @@
 
 Compiled 2026-07-07. All [M] items verified against Databricks SQL (serverless) as of July 2026.
 Provenance tags on every item:
-- **[M]** = measured live (real DBSQL warehouse runs, a large production analytics job (all patterns reproduced in examples/synthetic_job_presto.sql), or probe queries)
+- **[M]** = measured live (real DBSQL warehouse runs, a large real-world analytics job (all patterns reproduced in examples/synthetic_job_presto.sql), or probe queries)
 - **[B]** = verified via the sqlglot 30.12 transpile battery (144 expressions; see function_mapping.md)
 - **[D]** = documented/known behavior - include in the A/B reconcile fixture before relying on it
 
@@ -19,7 +19,7 @@ No error, no warning, wrong results. These are what reconciliation exists for.
 | **Integer division** `7 / 2` | `3` (truncates) [D] | `3.5` **[M]** | `div` operator or CAST |
 | **`repeat('x', 3)`** | `ARRAY['x','x','x']` [D] | `'xxx'` (string) **[M]** | `array_repeat(x, 3)` |
 | **Array subscript base** `arr[1]` | first element (1-based) [D] | second element (0-based) **[B]** - sqlglot rewrites the index | automated |
-| **`ROW()` vs `STRUCT()` in set ops** | anonymous, compares positionally | field names part of the type; `ARRAY_INTERSECT` on differently-named structs = `BINARY_ARRAY_DIFF_TYPES` **[M - found in a real production job]** | Rule 3: positional `_f0.._fn` rename |
+| **`ROW()` vs `STRUCT()` in set ops** | anonymous, compares positionally | field names part of the type; `ARRAY_INTERSECT` on differently-named structs = `BINARY_ARRAY_DIFF_TYPES` **[M - found in a real-world job]** | Rule 3: positional `_f0.._fn` rename |
 | **`map['missing_key']`** | runtime ERROR [D] | `NULL` **[M]** | behavior diff both directions; use `element_at`/`try_element_at` explicitly |
 | **ORDER BY null placement** | ASC = NULLS LAST default [D] | ASC = NULLS FIRST default [D] - flips ROW_NUMBER dedup winners | sqlglot emits explicit `NULLS LAST` when transpiling **[B]**; hand-ported SQL must do it manually |
 | **`xxhash64`** | returns VARBINARY [D] | returns BIGINT **[M]** | affects checksum comparisons across engines |
@@ -95,14 +95,28 @@ Higher-order functions (`filter`, `transform` + lambdas), `coalesce`, `nullif`, 
 
 | Implicit string/number coercion | STRICT: `CASE WHEN .. THEN varchar ELSE 0 END` and `varchar - bigint` are type errors **[M - Trino 479]** | PERMISSIVE: Spark coerces silently and runs **[M]** | converted SQL can run on DBSQL even where the source fails on Trino - masks schema-type mistakes, so certify with real data |
 
+## Field-feedback additions (surfaced running the skill on real-world Presto jobs)
+
+Surfaced running the skill against real-world Presto jobs (2026-07). Each was reproduced and the
+equivalent confirmed against Trino and Databricks docs, then measured on a live Trino 479 cluster
+vs Databricks SQL.
+
+| Construct | Trino | DBSQL | Fix |
+|---|---|---|---|
+| `year_of_week(x)` / `yow(x)` | ISO-8601 week-numbering year, BIGINT [D] | sqlglot emits `YEAR_OF_WEEK(x)` which is **not a DBSQL function** - fails at runtime **[D]** | Rule 7: `extract(YEAROFWEEK FROM x)` (same ISO-8601 semantics; not `weekofyear` = week number, not `year` = calendar year) |
+| `date_add('month'/'quarter'/'year', n, d)` on DATE | returns DATE, non-sticky month-end clamp [D] | naive `dateadd(MONTH,n,d)` returns **TIMESTAMP** = silent type drift [D] | Rule 6 (extended): `add_months(d, n / 3*n / 12*n)` (DATE, same clamp); `'week'` -> `date_add(d, 7*n)`, `'day'` -> `date_add(d, n)` |
+| **Lateral column alias in a window** | Presto has no lateral aliasing - source repeats the full expression in `OVER()` [D] | transpiles clean, then **fails at RUNTIME** with `UNSUPPORTED_FEATURE.LATERAL_COLUMN_ALIAS_IN_WINDOW` **[D]** | Rule 8: inline the aliased expression into `OVER()`; flag (do not duplicate) non-deterministic aliases |
+| `date_trunc('month', x)` on DATE | type-preserving: DATE in -> DATE out [D] | DBSQL `date_trunc` **always returns TIMESTAMP** even for a DATE input [D] | for a DATE input use `trunc(x, 'MONTH')` (returns DATE, but args are REVERSED: date first); TIMESTAMP input maps 1:1 |
+| `format_number(x)` (1-arg) | magnitude string `'1.23K'`/`'3.5M'` [D] | DBSQL `format_number(x, d)` is 2-arg fixed-decimal `'1,234.50'` - **opposite meaning, false friend** [D] | no 1:1 - FLAG for human review; appending a scale silently returns the wrong string |
+
 ## Environment-level differences (not per-expression)
 
 - **ANSI mode**: DBSQL default = errors on bad cast/overflow/div-zero; Presto errors similarly EXCEPT
   where TRY() was used. `ANSI_MODE=false` gets Trino-like NULL-on-error globally during migration [D].
 - **Session timezone** drives TIMESTAMP rendering/arithmetic - pin identically on both sides of the A/B [D].
 - **Ordinal GROUP BY / positional args**: both support; verified in job run **[M]**.
-- **Query hierarchy**: catalog.schema.table on both, but Trino catalogs map to connectors; EG's two-part
-  names resolve via the session catalog - set `catalog` in the DBSQL session to mirror **[M - harness]**.
+- **Query hierarchy**: catalog.schema.table on both, but Trino catalogs map to connectors; two-part
+  source names resolve via the session catalog - set `catalog` in the DBSQL session to mirror **[M - harness]**.
 - **Error taxonomy**: OOB array subscript errors on both (Spark: `INVALID_ARRAY_INDEX` under ANSI) **[M]**.
 
 ## How this catalog was built (and how to extend it)

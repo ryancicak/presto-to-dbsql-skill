@@ -104,9 +104,9 @@ WITH
             CAST(p.item_id AS VARCHAR),
             p.slot_number,
             COALESCE(p.candidate_info.promoted_bool, FALSE),
-            p.candidate_info.nightly_rate,
+            p.candidate_info.unit_price,
             p.candidate_info.badge_id
-          ) AS ROW (item_id VARCHAR, slot_number INT, promoted_bool BOOLEAN, nightly_rate DOUBLE, badge_id BIGINT)
+          ) AS ROW (item_id VARCHAR, slot_number INT, promoted_bool BOOLEAN, unit_price DOUBLE, badge_id BIGINT)
         )
       ) AS item_list,
       CASE
